@@ -25,6 +25,8 @@ LIBFL2K_APPEND_SRCS(
     libosmo-fl2k.c
 )
 
+add_subdirectory(SoapySDR)
+
 ########################################################################
 # Set up Windows DLL resource files
 ########################################################################

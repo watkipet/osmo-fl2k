@@ -8,7 +8,7 @@ set(OSMO_FL2K_LIBRARIES libosmo-fl2k_static)
 ########################################################################
 # build the module
 ########################################################################
-find_package(SoapySDR CONFIG)
+find_package(SoapySDR CONFIG REQUIRED)
 
 if (NOT SoapySDR_FOUND)
     message(WARNING "SoapySDR development files not found - skipping support")
@@ -21,6 +21,9 @@ SOAPY_SDR_MODULE_UTIL(
     SOURCES Registration.cpp Settings.cpp SampleRates.cpp Streaming.cpp
     LIBRARIES ${OSMO_FL2K_LIBRARIES}
 )
+
+add_executable(Test Test.cpp)
+target_link_libraries(Test ${SoapySDR_LIBRARIES})
 
 ########################################################################
 # Debug macro for printing all the variables

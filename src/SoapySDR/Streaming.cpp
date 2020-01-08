@@ -102,7 +102,7 @@ static void _tx_callback(fl2k_data_info_t *data_info)
 {
     //printf("_tx_callback\n");
     SoapyOsmoFL2K *self = (SoapyOsmoFL2K *) (data_info->ctx);
-    self->tx_callback((unsigned char *) (data_info->r_buf), data_info->len);
+    self->tx_callback((unsigned char **) &(data_info->r_buf), data_info->len);
 }
 
 void SoapyOsmoFL2K::tx_async_operation(void)
@@ -113,7 +113,7 @@ void SoapyOsmoFL2K::tx_async_operation(void)
     //printf("tx_async_operation done!\n");
 }
 
-void SoapyOsmoFL2K::tx_callback(unsigned char *buf, uint32_t len)
+void SoapyOsmoFL2K::tx_callback(unsigned char **buf, uint32_t len)
 {
     //printf("_tx_callback %d _buf_head=%d, numBuffers=%d\n", len, _buf_head, _buf_tail);
 
@@ -132,7 +132,8 @@ void SoapyOsmoFL2K::tx_callback(unsigned char *buf, uint32_t len)
     auto &buff = _buffs[_buf_tail];
     buff.tick = tick;
     buff.data.resize(len);
-    std::memcpy(buff.data.data(), buf, len);
+    //std::memcpy(buff.data.data(), buf, len);
+    *buf = (unsigned char *) buff.data.data();
 
     //increment the tail pointer
     _buf_tail = (_buf_tail + 1) % numBuffers;
@@ -330,103 +331,105 @@ int SoapyOsmoFL2K::deactivateStream(SoapySDR::Stream *stream, const int flags, c
 
 int SoapyOsmoFL2K::writeStream(
         SoapySDR::Stream *stream,
-        void * const *buffs,
+        const void * const *buffs,
         const size_t numElems,
         int &flags,
-        long long &timeNs,
+        const long long timeNs,
         const long timeoutUs)
 {
     //drop remainder buffer on reset
     if (resetBuffer and bufferedElems != 0)
     {
         bufferedElems = 0;
-        this->releaseWriteBuffer(stream, _currentHandle);
+        this->releaseWriteBuffer(stream, _currentHandle, numElems, flags, timeNs);
     }
 
     //this is the user's buffer for channel 0
-    void *buff0 = buffs[0];
+    const void *buff0 = buffs[0];
 
     //are elements left in the buffer? if not, do a new write.
     if (bufferedElems == 0)
     {
-        int ret = this->acquireWriteBuffer(stream, _currentHandle, (const void **)&_currentBuff, flags, timeNs, timeoutUs);
+        int ret = this->acquireWriteBuffer(stream, _currentHandle, (void **)&_currentBuff, timeoutUs);
         if (ret < 0) return ret;
         bufferedElems = ret;
     }
 
     //otherwise just update return time to the current tick count
-    else
-    {
-        flags |= SOAPY_SDR_HAS_TIME;
-        timeNs = SoapySDR::ticksToTimeNs(bufTicks, sampleRate);
-    }
+    // TODO: The time isn't for updating, it's for timing out!
+    //else
+    //{
+    //    flags |= SOAPY_SDR_HAS_TIME;
+    //    //timeNs = SoapySDR::ticksToTimeNs(bufTicks, sampleRate);
+    //}
 
     size_t returnedElems = std::min(bufferedElems, numElems);
 
-    //convert into user's buff0
+    // TODO: While the rescaling from unsigned to signed here is good,
+    // the destionation buffer is only for real data. So copying
+    // both I and Q doesn't make much sense.
     if (txFormat == FL2K_TX_FORMAT_FLOAT32)
     {
-        float *ftarget = (float *) buff0;
-        std::complex<float> tmp;
+        float *fsource = (float *) buff0;
         if (iqSwap)
         {
+            // TODO: Use a LUT if possible
             for (size_t i = 0; i < returnedElems; i++)
             {
-                tmp = _lut_swap_32f[*((uint16_t*) &_currentBuff[2 * i])];
-                ftarget[i * 2] = tmp.real();
-                ftarget[i * 2 + 1] = tmp.imag();
+                _currentBuff[i * 2] = (uint8_t) (fsource[i * 2 + 1] + 0.5) * 255.0;
+                _currentBuff[i * 2 + 1] = (uint8_t) (fsource[i * 2] + 0.5) * 255.0;;
             }
         }
         else
         {
             for (size_t i = 0; i < returnedElems; i++)
             {
-                tmp = _lut_32f[*((uint16_t*) &_currentBuff[2 * i])];
-                ftarget[i * 2] = tmp.real();
-                ftarget[i * 2 + 1] = tmp.imag();
+                _currentBuff[i * 2] = (uint8_t) (fsource[i * 2] + 0.5) * 255.0;
+                _currentBuff[i * 2 + 1] = (uint8_t) (fsource[i * 2 + 1] + 0.5) * 255.0;;
             }
         }
     }
     else if (txFormat == FL2K_TX_FORMAT_INT16)
     {
-        int16_t *itarget = (int16_t *) buff0;
-        std::complex<int16_t> tmp;
+        // TODO: Use a LUT if possible
+        int16_t *isource = (int16_t *) buff0;
         if (iqSwap)
         {
             for (size_t i = 0; i < returnedElems; i++)
             {
-                tmp = _lut_swap_16i[*((uint16_t*) &_currentBuff[2 * i])];
-                itarget[i * 2] = tmp.real();
-                itarget[i * 2 + 1] = tmp.imag();
+                _currentBuff[i * 2] = isource[i * 2] >> 8;
+                _currentBuff[i * 2 + 1] = isource[i * 2 + 1] >> 8;
             }
         }
         else
         {
             for (size_t i = 0; i < returnedElems; i++)
             {
-                tmp = _lut_16i[*((uint16_t*) &_currentBuff[2 * i])];
-                itarget[i * 2] = tmp.real();
-                itarget[i * 2 + 1] = tmp.imag();
+                _currentBuff[i * 2] = isource[i * 2] >> 8;
+                _currentBuff[i * 2 + 1] = isource[i * 2 + 1] >> 8;
             }
         }
     }
     else if (txFormat == FL2K_TX_FORMAT_INT8)
     {
-        int8_t *itarget = (int8_t *) buff0;
+        // TODO: While the rescaling from unsigned to signed here is good,
+        // the desitionation buffer is only for real data. So copying
+        // both I and Q doesn't make much sense.
+        int8_t *isource = (int8_t *) buff0;
         if (iqSwap)
         {
             for (size_t i = 0; i < returnedElems; i++)
             {
-                itarget[i * 2] = _currentBuff[i * 2 + 1]-128;
-                itarget[i * 2 + 1] = _currentBuff[i * 2]-128;
+                _currentBuff[i * 2] = isource[i * 2 + 1] + 128;
+                _currentBuff[i * 2 + 1] = isource[i * 2] + 128;
             }
         }
         else
         {
             for (size_t i = 0; i < returnedElems; i++)
             {
-                itarget[i * 2] = _currentBuff[i * 2]-128;
-                itarget[i * 2 + 1] = _currentBuff[i * 2 + 1]-128;
+                _currentBuff[i * 2] = isource[i * 2] + 128;
+                _currentBuff[i * 2 + 1] = isource[i * 2 + 1] + 128;
             }
         }
     }
@@ -438,7 +441,7 @@ int SoapyOsmoFL2K::writeStream(
 
     //return number of elements written to buff0
     if (bufferedElems != 0) flags |= SOAPY_SDR_MORE_FRAGMENTS;
-    else this->releaseWriteBuffer(stream, _currentHandle);
+    else this->releaseWriteBuffer(stream, _currentHandle, numElems, flags, timeNs);
     return returnedElems;
 }
 
@@ -460,9 +463,7 @@ int SoapyOsmoFL2K::getDirectAccessBufferAddrs(SoapySDR::Stream *stream, const si
 int SoapyOsmoFL2K::acquireWriteBuffer(
     SoapySDR::Stream *stream,
     size_t &handle,
-    const void **buffs,
-    int &flags,
-    long long &timeNs,
+    void **buffs,
     const long timeoutUs)
 {
     //reset is issued by various settings
@@ -497,17 +498,21 @@ int SoapyOsmoFL2K::acquireWriteBuffer(
     handle = _buf_head;
     _buf_head = (_buf_head + 1) % numBuffers;
     bufTicks = _buffs[handle].tick;
-    timeNs = SoapySDR::ticksToTimeNs(_buffs[handle].tick, sampleRate);
+    //timeNs = SoapySDR::ticksToTimeNs(_buffs[handle].tick, sampleRate);
     buffs[0] = (void *)_buffs[handle].data.data();
-    flags = SOAPY_SDR_HAS_TIME;
+    //flags = SOAPY_SDR_HAS_TIME;
 
     //return number available
     return _buffs[handle].data.size() / BYTES_PER_SAMPLE;
 }
 
+
 void SoapyOsmoFL2K::releaseWriteBuffer(
     SoapySDR::Stream *stream,
-    const size_t handle)
+    const size_t handle,
+    const size_t numElems,
+    int &flags,
+    const long long timeNs)
 {
     //TODO this wont handle out of order releases
     _buf_count--;

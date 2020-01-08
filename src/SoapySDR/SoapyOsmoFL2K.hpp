@@ -69,10 +69,10 @@ public:
 
     int writeStream(
             SoapySDR::Stream *stream,
-            void * const *buffs,
+            const void * const *buffs,
             const size_t numElems,
             int &flags,
-            long long &timeNs,
+            const long long timeNs,
             const long timeoutUs = 100000);
 
     /*******************************************************************
@@ -86,14 +86,15 @@ public:
     int acquireWriteBuffer(
         SoapySDR::Stream *stream,
         size_t &handle,
-        const void **buffs,
-        int &flags,
-        long long &timeNs,
+        void **buffs,
         const long timeoutUs = 100000);
 
     void releaseWriteBuffer(
         SoapySDR::Stream *stream,
-        const size_t handle);
+        const size_t handle,
+        const size_t numElems,
+        int &flags,
+        const long long timeNs = 0);
 
     /*******************************************************************
      * Antenna API
@@ -181,7 +182,7 @@ public:
     //async api usage
     std::thread _tx_async_thread;
     void tx_async_operation(void);
-    void tx_callback(unsigned char *buf, uint32_t len);
+    void tx_callback(unsigned char **buf, uint32_t len);
 
     std::mutex _buf_mutex;
     std::condition_variable _buf_cond;

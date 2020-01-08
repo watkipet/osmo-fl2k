@@ -123,7 +123,10 @@ std::vector<std::string> SoapyOsmoFL2K::listAntennas(const int direction, const 
 {
 	// TODO: Should we change this to 3?
     std::vector<std::string> antennas;
-    antennas.push_back("TX");
+    if (direction == SOAPY_SDR_TX)
+    {
+        antennas.push_back("TX");
+    }
     return antennas;
 }
 

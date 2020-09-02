@@ -6,7 +6,11 @@
 
 typedef enum fl2kTXFormat
 {
-    FL2K_TX_FORMAT_FLOAT32, FL2K_TX_FORMAT_INT16, FL2K_TX_FORMAT_INT8
+    FL2K_TX_FORMAT_FLOAT32,
+    FL2K_TX_FORMAT_INT16,
+    FL2K_TX_FORMAT_INT8,
+    FL2K_TX_FORMAT_UINT16,
+    FL2K_TX_FORMAT_UINT8
 } fl2kTXFormat;
 
 #define DEFAULT_NUM_BUFFERS 4
@@ -180,6 +184,8 @@ private:
     uint32_t sampleRate;
     size_t bufferLength, asyncBuffs;
     std::atomic<long long> ticks;
+    bool _signed;
+    std::chrono::system_clock::time_point start;
     
 public:
     struct Buffer
@@ -195,7 +201,9 @@ public:
     std::mutex _buf_mutex;
     std::condition_variable _buf_cond;
 
-    Buffer _buff;
+    std::vector<Buffer> _buffs;
+    size_t    _buf_head;
+    size_t    _buf_tail;
     std::atomic<ssize_t>	_buf_count;
     signed char *_currentBuff;
     std::atomic<bool> _underflowEvent;

@@ -64,7 +64,7 @@ static int TestTx(SoapySDR::Device *sdr, std::vector<std::string> &str_list)
         void *buffs[] = {buff};
         int flags = 0;
         long long time_ns;
-        ret = sdr->writeStream( tx_stream, buffs, sizeof(buff) / sizeof(buff[0]), flags, time_ns, 1e5);
+        ret = sdr->writeStream( tx_stream, buffs, sizeof(buff) / sizeof(buff[0]), flags, time_ns, 1e6);
         
         printf("ret = ");
         if (ret < 0)

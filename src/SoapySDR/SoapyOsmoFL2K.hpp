@@ -74,6 +74,13 @@ public:
             int &flags,
             const long long timeNs,
             const long timeoutUs = 100000);
+    
+    int readStreamStatus(
+        SoapySDR::Stream *stream,
+        size_t &chanMask,
+        int &flags,
+        long long &timeNs,
+        const long timeoutUs = 100000);
 
     /*******************************************************************
      * Direct buffer access API
@@ -153,6 +160,14 @@ public:
     void writeSetting(const std::string &key, const std::string &value);
 
     std::string readSetting(const std::string &key) const;
+    
+    /*******************************************************************
+     * Settings API
+     ******************************************************************/
+    
+    static const std::string &fl2kErrorToString(enum fl2k_error error);
+    
+    static const std::string &fl2kErrorToString(int error);
 
 private:
 
@@ -163,34 +178,25 @@ private:
     //cached settings
     fl2kTXFormat txFormat;
     uint32_t sampleRate;
-    size_t numBuffers, bufferLength, asyncBuffs;
-    bool iqSwap;
+    size_t bufferLength, asyncBuffs;
     std::atomic<long long> ticks;
-
-    std::vector<std::complex<float> > _lut_32f;
-    std::vector<std::complex<float> > _lut_swap_32f;
-    std::vector<std::complex<int16_t> > _lut_16i;
-    std::vector<std::complex<int16_t> > _lut_swap_16i;
     
 public:
     struct Buffer
     {
         unsigned long long tick;
-        std::vector<signed char> data;
+        // TODO: Make unsigned char
+        signed char data[FL2K_BUF_LEN];
     };
 
     //async api usage
-    std::thread _tx_async_thread;
-    void tx_async_operation(void);
-    void tx_callback(unsigned char **buf, uint32_t len);
+    void tx_callback(fl2k_data_info_t *data_info);
 
     std::mutex _buf_mutex;
     std::condition_variable _buf_cond;
 
-    std::vector<Buffer> _buffs;
-    size_t	_buf_head;
-    size_t	_buf_tail;
-    std::atomic<size_t>	_buf_count;
+    Buffer _buff;
+    std::atomic<ssize_t>	_buf_count;
     signed char *_currentBuff;
     std::atomic<bool> _underflowEvent;
     size_t _currentHandle;

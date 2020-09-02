@@ -23,10 +23,8 @@ SoapyOsmoFL2K::SoapyOsmoFL2K(const SoapySDR::Kwargs &args)
 
     sampleRate = 2048000;
 
-    numBuffers = DEFAULT_NUM_BUFFERS;
+    asyncBuffs = DEFAULT_NUM_BUFFERS;
     bufferLength = DEFAULT_BUFFER_LENGTH;
-
-    iqSwap = false;
 
     ticks = 0;
 
@@ -255,20 +253,10 @@ SoapySDR::ArgInfoList SoapyOsmoFL2K::getSettingInfo(void) const
 
 void SoapyOsmoFL2K::writeSetting(const std::string &key, const std::string &value)
 {
-    if (key == "iq_swap")
-    {
-        iqSwap = ((value=="true") ? true : false);
-        SoapySDR_logf(SOAPY_SDR_DEBUG, "OSMO-FL2K I/Q swap: %s", iqSwap ? "true" : "false");
-    }
 }
 
 std::string SoapyOsmoFL2K::readSetting(const std::string &key) const
 {
-
-    if (key == "iq_swap") {
-        return iqSwap?"true":"false";
-    }
-    
     SoapySDR_logf(SOAPY_SDR_WARNING, "Unknown setting '%s'", key.c_str());
     return "";
 }

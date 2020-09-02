@@ -31,14 +31,16 @@
 #include <algorithm> //min
 #include <climits> //SHRT_MAX
 #include <cstring> // memcpy
+#include <iostream>           // std::cout
+#include <iomanip>
 
 
 std::vector<std::string> SoapyOsmoFL2K::getStreamFormats(const int direction, const size_t channel) const {
     std::vector<std::string> formats;
 
-    formats.push_back(SOAPY_SDR_CS8);
-    formats.push_back(SOAPY_SDR_CS16);
-    formats.push_back(SOAPY_SDR_CF32);
+    formats.push_back(SOAPY_SDR_S8);
+    formats.push_back(SOAPY_SDR_S16);
+    formats.push_back(SOAPY_SDR_F32);
 
     return formats;
 }
@@ -50,7 +52,7 @@ std::string SoapyOsmoFL2K::getNativeStreamFormat(const int direction, const size
      }
 
      fullScale = 128;
-     return SOAPY_SDR_CS8;
+     return SOAPY_SDR_S8;
 }
 
 SoapySDR::ArgInfoList SoapyOsmoFL2K::getStreamArgsInfo(const int direction, const size_t channel) const {
@@ -102,49 +104,88 @@ static void _tx_callback(fl2k_data_info_t *data_info)
 {
     //printf("_tx_callback\n");
     SoapyOsmoFL2K *self = (SoapyOsmoFL2K *) (data_info->ctx);
-    self->tx_callback((unsigned char **) &(data_info->r_buf), data_info->len);
+    self->tx_callback(data_info);
 }
 
-void SoapyOsmoFL2K::tx_async_operation(void)
+const std::string &SoapyOsmoFL2K::fl2kErrorToString(enum fl2k_error error)
 {
-    //printf("tx_async_operation\n");
-    // TODO: What about the return value?
-    fl2k_start_tx(dev, &_tx_callback, this, asyncBuffs);
-    //printf("tx_async_operation done!\n");
+    static const std::map<enum fl2k_error, std::string> errorToStringMap =
+    {
+        { FL2K_SUCCESS,             "FL2K_SUCCESS" },
+        { FL2K_TRUE,                "FL2K_TRUE" },
+        { FL2K_ERROR_INVALID_PARAM, "FL2K_ERROR_INVALID_PARAM" },
+        { FL2K_ERROR_NO_DEVICE,     "FL2K_ERROR_NO_DEVICE" },
+        { FL2K_ERROR_NOT_FOUND,     "FL2K_ERROR_NOT_FOUND" },
+        { FL2K_ERROR_BUSY,          "FL2K_ERROR_BUSY" },
+        { FL2K_ERROR_TIMEOUT,       "FL2K_ERROR_TIMEOUT" },
+        { FL2K_ERROR_NO_MEM,        "FL2K_ERROR_NO_MEM" },
+    };
+    
+    // TODO: Is this thread safe?
+    std::map<enum fl2k_error, std::string>::const_iterator it = errorToStringMap.find(error);
+    if (it == errorToStringMap.end())
+    {
+        throw std::runtime_error("Invalid fl2k_error: " + std::to_string(error));
+    }
+    return it->second;
 }
 
-void SoapyOsmoFL2K::tx_callback(unsigned char **buf, uint32_t len)
+const std::string &SoapyOsmoFL2K::fl2kErrorToString(int error)
 {
-    //printf("_tx_callback %d _buf_head=%d, numBuffers=%d\n", len, _buf_head, _buf_tail);
+    return fl2kErrorToString((enum fl2k_error) error);
+}
+
+void SoapyOsmoFL2K::tx_callback(fl2k_data_info_t *data_info)
+{
+    printf("_tx_callback %d _buf_count=%d, device_error=%d, underflow_cnt=%d\n", data_info->len, (int) _buf_count, data_info->device_error, data_info->underflow_cnt);
 
     // atomically add len to ticks but return the previous value
-    unsigned long long tick = ticks.fetch_add(len);
+    unsigned long long tick = ticks.fetch_add(data_info->len);
 
 	// TODO: This was overflow -- verify this
     //underflow condition: the caller is not writing fast enough
-    if (_buf_count == numBuffers)
-    {
-        _underflowEvent = true;
-        return;
-    }
+    //if (_buf_count == numBuffers)
+    //{
+    //    _underflowEvent = true;
+    //    return;
+    //}
 
-    //copy into the buffer queue
-    auto &buff = _buffs[_buf_tail];
-    buff.tick = tick;
-    buff.data.resize(len);
-    //std::memcpy(buff.data.data(), buf, len);
-    *buf = (unsigned char *) buff.data.data();
-
-    //increment the tail pointer
-    _buf_tail = (_buf_tail + 1) % numBuffers;
+    // Give the driver the next filled buffer
+    _buff.tick = tick;
+    data_info->r_buf = (char *) _buff.data;
+    
+    printf("_tx_callback r_buf=%p\n", data_info->r_buf);
 
     //increment buffers available under lock
     //to avoid race in acquireWriteBuffer wait
+   // {
+   // std::lock_guard<std::mutex> lock(_buf_mutex);
+   // _buf_count--;
+   //
+   // }
+    
+    std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
+    std::unique_lock <std::mutex> lock(_buf_mutex);
+    if (_buf_cond.wait_for(lock, std::chrono::seconds(2), [this]{return _buf_count > 0;}) == false)
     {
-    std::lock_guard<std::mutex> lock(_buf_mutex);
-    _buf_count++;
-
+        // TODO: What do we do if we fail?
+        std::cout
+            << "tx_callback timed out after waiting "
+            << std::setfill('0') << std::setw(7)
+            << std::chrono::duration_cast<std::chrono::microseconds> (std::chrono::system_clock::now() - start).count()
+            << " us for buffer to be filled\n";
+        return;
     }
+    
+    std::cout
+        << std::setfill('0') << std::setw(7)
+        << std::chrono::duration_cast<std::chrono::microseconds> (std::chrono::system_clock::now() - start).count()
+        << " us spent waiting for buffer to be filled\n";
+    
+    // Decrement the number of filled buffers.
+    _buf_count--;
+    
+    // TODO: Should we unlock the mutex now?
 
     //notify writeStream()
     _buf_cond.notify_one();
@@ -172,61 +213,25 @@ SoapySDR::Stream *SoapyOsmoFL2K::setupStream(
     }
 
     //check the format
-    if (format == SOAPY_SDR_CF32)
+    if (format == SOAPY_SDR_F32)
     {
-        SoapySDR_log(SOAPY_SDR_INFO, "Using format CF32.");
+        SoapySDR_log(SOAPY_SDR_INFO, "Using format F32.");
         txFormat = FL2K_TX_FORMAT_FLOAT32;
     }
-    else if (format == SOAPY_SDR_CS16)
+    else if (format == SOAPY_SDR_S16)
     {
-        SoapySDR_log(SOAPY_SDR_INFO, "Using format CS16.");
+        SoapySDR_log(SOAPY_SDR_INFO, "Using format S16.");
         txFormat = FL2K_TX_FORMAT_INT16;
     }
-    else if (format == SOAPY_SDR_CS8) {
-        SoapySDR_log(SOAPY_SDR_INFO, "Using format CS8.");
+    else if (format == SOAPY_SDR_S8) {
+        SoapySDR_log(SOAPY_SDR_INFO, "Using format S8.");
         txFormat = FL2K_TX_FORMAT_INT8;
     }
     else
     {
         throw std::runtime_error(
                 "setupStream invalid format '" + format
-                        + "' -- Only CS8, CS16 and CF32 are supported by SoapyOsmoFL2K module.");
-    }
-
-    if (txFormat != FL2K_TX_FORMAT_INT8 && !_lut_32f.size())
-    {
-        SoapySDR_logf(SOAPY_SDR_DEBUG, "Generating Osmo-FL2K lookup tables");
-        // create lookup tables
-        for (unsigned int i = 0; i <= 0xffff; i++)
-        {
-# if (__BYTE_ORDER == __LITTLE_ENDIAN)
-            float re = ((i & 0xff) - 127.4f) * (1.0f / 128.0f);
-            float im = ((i >> 8) - 127.4f) * (1.0f / 128.0f);
-#else
-            float re = ((i >> 8) - 127.4f) * (1.0f / 128.0f);
-            float im = ((i & 0xff) - 127.4f) * (1.0f / 128.0f);
-#endif
-
-            std::complex<float> v32f, vs32f;
-
-            v32f.real(re);
-            v32f.imag(im);
-            _lut_32f.push_back(v32f);
-
-            vs32f.real(v32f.imag());
-            vs32f.imag(v32f.real());
-            _lut_swap_32f.push_back(vs32f);
-
-            std::complex<int16_t> v16i, vs16i;
-
-            v16i.real(int16_t((float(SHRT_MAX) * re)));
-            v16i.imag(int16_t((float(SHRT_MAX) * im)));
-            _lut_16i.push_back(v16i);
-
-            vs16i.real(vs16i.imag());
-            vs16i.imag(vs16i.real());
-            _lut_swap_16i.push_back(vs16i);
-        }
+                        + "' -- Only S8, S16 and F32 are supported by SoapyOsmoFL2K module.");
     }
 
     bufferLength = DEFAULT_BUFFER_LENGTH;
@@ -244,7 +249,7 @@ SoapySDR::Stream *SoapyOsmoFL2K::setupStream(
     }
     SoapySDR_logf(SOAPY_SDR_DEBUG, "Osmo-FL2K Using buffer length %d", bufferLength);
 
-    numBuffers = DEFAULT_NUM_BUFFERS;
+    asyncBuffs = DEFAULT_NUM_BUFFERS;
     if (args.count("buffers") != 0)
     {
         try
@@ -252,12 +257,12 @@ SoapySDR::Stream *SoapyOsmoFL2K::setupStream(
             int numBuffers_in = std::stoi(args.at("buffers"));
             if (numBuffers_in > 0)
             {
-                numBuffers = numBuffers_in;
+                asyncBuffs = numBuffers_in;
             }
         }
         catch (const std::invalid_argument &){}
     }
-    SoapySDR_logf(SOAPY_SDR_DEBUG, "Osmo-FL2K Using %d buffers", numBuffers);
+    SoapySDR_logf(SOAPY_SDR_DEBUG, "Osmo-FL2K Using %d buffers", asyncBuffs);
 
     asyncBuffs = 0;
     if (args.count("asyncBuffs") != 0)
@@ -273,15 +278,8 @@ SoapySDR::Stream *SoapyOsmoFL2K::setupStream(
         catch (const std::invalid_argument &){}
     }
 
-    //clear async fifo counts
-    _buf_tail = 0;
-    _buf_count = 0;
-    _buf_head = 0;
-
-    //allocate buffers
-    _buffs.resize(numBuffers);
-    for (auto &buff : _buffs) buff.data.reserve(bufferLength);
-    for (auto &buff : _buffs) buff.data.resize(bufferLength);
+    // No buffers have been filled
+    _buf_count = -1;
 
     return (SoapySDR::Stream *) this;
 }
@@ -289,7 +287,6 @@ SoapySDR::Stream *SoapyOsmoFL2K::setupStream(
 void SoapyOsmoFL2K::closeStream(SoapySDR::Stream *stream)
 {
     this->deactivateStream(stream, 0, 0);
-    _buffs.clear();
 }
 
 size_t SoapyOsmoFL2K::getStreamMTU(SoapySDR::Stream *stream) const
@@ -306,27 +303,30 @@ int SoapyOsmoFL2K::activateStream(
     if (flags != 0) return SOAPY_SDR_NOT_SUPPORTED;
     resetBuffer = true;
     bufferedElems = 0;
-
-    //start the async thread
-    if (not _tx_async_thread.joinable())
-    {
-        // TODO: Previously there was rtlsdr_reset_buffer(dev), but fl2k doesn't have 
-        // that call
-        _tx_async_thread = std::thread(&SoapyOsmoFL2K::tx_async_operation, this);
-    }
-
-    return 0;
+    
+    return fl2k_start_tx(dev, &_tx_callback, this, asyncBuffs);
 }
 
 int SoapyOsmoFL2K::deactivateStream(SoapySDR::Stream *stream, const int flags, const long long timeNs)
 {
     if (flags != 0) return SOAPY_SDR_NOT_SUPPORTED;
-    if (_tx_async_thread.joinable())
+    
+    // Release all the buffers first.
+    int numDirectAccessBuffers = getNumDirectAccessBuffers(stream);
+    for (int i = 0; i < numDirectAccessBuffers; i++)
     {
-        fl2k_stop_tx(dev);
-        _tx_async_thread.join();
+        int presentFlags = flags;
+        releaseWriteBuffer(stream, _currentHandle, 0, presentFlags, timeNs);
     }
-    return 0;
+    
+    fl2k_error ret = (fl2k_error) fl2k_stop_tx(dev);
+    
+    if (ret != FL2K_SUCCESS)
+    {
+        std::cerr << "WARNING: SoapyOsmoFL2K::deactivateStream(): " << SoapyOsmoFL2K::fl2kErrorToString(ret) << "\n";
+    }
+    
+    return ret;
 }
 
 int SoapyOsmoFL2K::writeStream(
@@ -338,11 +338,11 @@ int SoapyOsmoFL2K::writeStream(
         const long timeoutUs)
 {
     //drop remainder buffer on reset
-    if (resetBuffer and bufferedElems != 0)
-    {
-        bufferedElems = 0;
-        this->releaseWriteBuffer(stream, _currentHandle, numElems, flags, timeNs);
-    }
+    // if (resetBuffer and bufferedElems != 0)
+    // {
+    //     bufferedElems = 0;
+    //     this->releaseWriteBuffer(stream, _currentHandle, numElems, flags, timeNs);
+    // }
 
     //this is the user's buffer for channel 0
     const void *buff0 = buffs[0];
@@ -365,72 +365,31 @@ int SoapyOsmoFL2K::writeStream(
 
     size_t returnedElems = std::min(bufferedElems, numElems);
 
-    // TODO: While the rescaling from unsigned to signed here is good,
-    // the destionation buffer is only for real data. So copying
-    // both I and Q doesn't make much sense.
+    // Translate from signed float to unsigned uchar
     if (txFormat == FL2K_TX_FORMAT_FLOAT32)
     {
         float *fsource = (float *) buff0;
-        if (iqSwap)
+        for (size_t i = 0; i < returnedElems; i++)
         {
-            // TODO: Use a LUT if possible
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                _currentBuff[i * 2] = (uint8_t) (fsource[i * 2 + 1] + 0.5) * 255.0;
-                _currentBuff[i * 2 + 1] = (uint8_t) (fsource[i * 2] + 0.5) * 255.0;;
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                _currentBuff[i * 2] = (uint8_t) (fsource[i * 2] + 0.5) * 255.0;
-                _currentBuff[i * 2 + 1] = (uint8_t) (fsource[i * 2 + 1] + 0.5) * 255.0;;
-            }
+            _currentBuff[i] = (uint8_t) (fsource[i] + 0.5) * 255.0;
         }
     }
     else if (txFormat == FL2K_TX_FORMAT_INT16)
     {
-        // TODO: Use a LUT if possible
         int16_t *isource = (int16_t *) buff0;
-        if (iqSwap)
+        for (size_t i = 0; i < returnedElems; i++)
         {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                _currentBuff[i * 2] = isource[i * 2] >> 8;
-                _currentBuff[i * 2 + 1] = isource[i * 2 + 1] >> 8;
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                _currentBuff[i * 2] = isource[i * 2] >> 8;
-                _currentBuff[i * 2 + 1] = isource[i * 2 + 1] >> 8;
-            }
+            // TODO: Check this for correctness.
+            _currentBuff[i] = (isource[i] + 32768) >> 8;
         }
     }
     else if (txFormat == FL2K_TX_FORMAT_INT8)
     {
-        // TODO: While the rescaling from unsigned to signed here is good,
-        // the desitionation buffer is only for real data. So copying
-        // both I and Q doesn't make much sense.
+        // Rescale from unsigned to signed
         int8_t *isource = (int8_t *) buff0;
-        if (iqSwap)
+        for (size_t i = 0; i < returnedElems; i++)
         {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                _currentBuff[i * 2] = isource[i * 2 + 1] + 128;
-                _currentBuff[i * 2 + 1] = isource[i * 2] + 128;
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                _currentBuff[i * 2] = isource[i * 2] + 128;
-                _currentBuff[i * 2 + 1] = isource[i * 2 + 1] + 128;
-            }
+            _currentBuff[i] = isource[i] + 128;
         }
     }
 
@@ -445,18 +404,54 @@ int SoapyOsmoFL2K::writeStream(
     return returnedElems;
 }
 
+int SoapyOsmoFL2K::readStreamStatus(
+        SoapySDR::Stream *stream,
+        size_t &chanMask,
+        int &flags,
+        long long &timeNs,
+        const long timeoutUs)
+{
+
+    // TODO: Check *stream
+
+    //calculate when the loop should exit
+    const auto timeout = std::chrono::duration_cast<std::chrono::high_resolution_clock::duration>(std::chrono::microseconds(timeoutUs));
+    const auto exitTime = std::chrono::high_resolution_clock::now() + timeout;
+
+    //poll for status events until the timeout expires
+    while (true)
+    {
+         if(_underflowEvent)
+         {
+             _underflowEvent = false;
+             SoapySDR::log(SOAPY_SDR_SSI, "U");
+             return SOAPY_SDR_UNDERFLOW;
+         }
+        
+
+        // sleep for a fraction of the total timeout
+        const auto sleepTimeUs = std::min<long>(1000, timeoutUs/10);
+        std::this_thread::sleep_for(std::chrono::microseconds(sleepTimeUs));
+
+        //check for timeout expired
+        const auto timeNow = std::chrono::high_resolution_clock::now();
+        if (exitTime < timeNow) return SOAPY_SDR_TIMEOUT;
+    }
+}
+
+
 /*******************************************************************
  * Direct buffer access API
  ******************************************************************/
 
 size_t SoapyOsmoFL2K::getNumDirectAccessBuffers(SoapySDR::Stream *stream)
 {
-    return _buffs.size();
+    return 1;
 }
 
 int SoapyOsmoFL2K::getDirectAccessBufferAddrs(SoapySDR::Stream *stream, const size_t handle, void **buffs)
 {
-    buffs[0] = (void *)_buffs[handle].data.data();
+    buffs[0] = (void *) _buff.data;
     return 0;
 }
 
@@ -466,44 +461,61 @@ int SoapyOsmoFL2K::acquireWriteBuffer(
     void **buffs,
     const long timeoutUs)
 {
+    printf("acquireWriteBuffer _buf_count=%d\n", (int) _buf_count);
+    
+    // TODO: Doe we need to do anything on reset?
     //reset is issued by various settings
     //to drain old data out of the queue
-    if (resetBuffer)
-    {
-        //drain all buffers from the fifo
-        _buf_head = (_buf_head + _buf_count.exchange(0)) % numBuffers;
-        resetBuffer = false;
-        _underflowEvent = false;
-    }
+    //if (resetBuffer)
+    //{
+    //    //drain all buffers from the fifo
+    //    _buf_head = (_buf_head + _buf_count.exchange(0)) % numBuffers;
+    //    resetBuffer = false;
+    //    _underflowEvent = false;
+    //}
 
+    // TODO: Do we need to do anything on underflow?
     //handle overflow from the tx callback thread
-    if (_underflowEvent)
+    //if (_underflowEvent)
+    //{
+    //    //drain the old buffers from the fifo
+    //    _buf_head = (_buf_head + _buf_count.exchange(0)) % numBuffers;
+    //    _underflowEvent = false;
+    //    SoapySDR::log(SOAPY_SDR_SSI, "O");
+    //    return SOAPY_SDR_UNDERFLOW;
+    //}
+    
+    // Increment the number of buffers about to be filled
+    _buf_count++;
+    
+    // Notify the transmission thread that there's a buffer to transmit
+    if (_buf_count > 0)
     {
-        //drain the old buffers from the fifo
-        _buf_head = (_buf_head + _buf_count.exchange(0)) % numBuffers;
-        _underflowEvent = false;
-        SoapySDR::log(SOAPY_SDR_SSI, "O");
-        return SOAPY_SDR_OVERFLOW;
+        _buf_cond.notify_one();
     }
 
-    //wait for a buffer to become available
-    if (_buf_count == 0)
+    // Wait for the buffer to become available
+    std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
+    std::unique_lock <std::mutex> lock(_buf_mutex);
+    if (_buf_cond.wait_for(lock, std::chrono::microseconds(timeoutUs), [this]{return _buf_count < 1;}) == false)
     {
-        std::unique_lock <std::mutex> lock(_buf_mutex);
-        _buf_cond.wait_for(lock, std::chrono::microseconds(timeoutUs), [this]{return _buf_count != 0;});
-        if (_buf_count == 0) return SOAPY_SDR_TIMEOUT;
+        // Reset the _buf_count in case someone tries to get acquire another buffer right after we return.
+        _buf_count = 0;
+        return SOAPY_SDR_TIMEOUT;
     }
+    std::cout
+        << std::setfill('0') << std::setw(7)
+        << std::chrono::duration_cast<std::chrono::microseconds> (std::chrono::system_clock::now() - start).count()
+        << " us spent waiting to acquire buffer\n";
+    
+    // TODO: Why would we need handle?
+    //handle = _buf_head;
+    
+    bufTicks = _buff.tick;
+    buffs[0] = (void *)_buff.data;
 
-    //extract handle and buffer
-    handle = _buf_head;
-    _buf_head = (_buf_head + 1) % numBuffers;
-    bufTicks = _buffs[handle].tick;
-    //timeNs = SoapySDR::ticksToTimeNs(_buffs[handle].tick, sampleRate);
-    buffs[0] = (void *)_buffs[handle].data.data();
-    //flags = SOAPY_SDR_HAS_TIME;
-
-    //return number available
-    return _buffs[handle].data.size() / BYTES_PER_SAMPLE;
+    // Return the number of elements available
+    return sizeof(_buff.data) / BYTES_PER_SAMPLE;
 }
 
 
@@ -514,6 +526,8 @@ void SoapyOsmoFL2K::releaseWriteBuffer(
     int &flags,
     const long long timeNs)
 {
-    //TODO this wont handle out of order releases
-    _buf_count--;
+    // Notify the transmitting thread that a new
+    // (the final) buffer is ready to be sent.
+    // TODO: what  if only some of the data is filled in? Won't we get garbage at the end?
+    _buf_cond.notify_one();
 }

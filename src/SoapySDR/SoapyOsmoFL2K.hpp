@@ -45,6 +45,10 @@ public:
 
     size_t getNumChannels(const int) const;
     
+    SoapySDR::Kwargs getChannelInfo(const int direction, const size_t channel) const;
+
+    bool getFullDuplex(const int direction, const size_t channel) const;
+    
 
     /*******************************************************************
      * Stream API
@@ -174,6 +178,11 @@ public:
     static const std::string &fl2kErrorToString(int error);
 
 private:
+    
+    int writeStreamForChannel(
+        const void * const buff,
+        unsigned char *currentBuff,
+        size_t returnedElems);
 
     //device handle
     int deviceId;
@@ -191,8 +200,9 @@ public:
     struct Buffer
     {
         unsigned long long tick;
-        // TODO: Make unsigned char
-        signed char data[FL2K_BUF_LEN];
+        unsigned char red[FL2K_BUF_LEN];
+        unsigned char green[FL2K_BUF_LEN];
+        unsigned char blue[FL2K_BUF_LEN];
     };
 
     //async api usage
@@ -205,7 +215,7 @@ public:
     size_t    _buf_head;
     size_t    _buf_tail;
     std::atomic<ssize_t>	_buf_count;
-    signed char *_currentBuff;
+    unsigned char * _currentBuffs[3];
     std::atomic<bool> _underflowEvent;
     size_t _currentHandle;
     size_t bufferedElems;

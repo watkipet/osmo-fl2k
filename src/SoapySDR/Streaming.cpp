@@ -182,7 +182,9 @@ void SoapyOsmoFL2K::tx_callback(fl2k_data_info_t *data_info)
     // Give the driver the next filled buffer
     auto &buff = _buffs[_buf_tail];
     buff.tick = tick;
-    data_info->r_buf = (char *) buff.data;
+    data_info->r_buf = (char *) buff.red;
+    data_info->g_buf = (char *) buff.green;
+    data_info->b_buf = (char *) buff.blue;
     data_info->sampletype_signed = _signed;
     
     // Advance the tail to point to the next buffer
@@ -357,6 +359,54 @@ int SoapyOsmoFL2K::deactivateStream(SoapySDR::Stream *stream, const int flags, c
     return ret;
 }
 
+int SoapyOsmoFL2K::writeStreamForChannel(
+        const void * const buff,
+        unsigned char *currentBuff,
+        size_t returnedElems)
+{
+     // Translate from signed float to unsigned uchar
+     if (txFormat == FL2K_TX_FORMAT_FLOAT32)
+     {
+         float *fsource = (float *) buff;
+         _signed = true;
+         for (size_t i = 0; i < returnedElems; i++)
+         {
+             float scaled = fsource[i] * 128.0;
+             int8_t truncated = (int8_t) scaled;
+             currentBuff[i] = truncated;
+             //_currentBuff[i] = (int8_t) (fsource[i] * 255.0);
+         }
+     }
+     else if (txFormat == FL2K_TX_FORMAT_INT16)
+     {
+         int16_t *isource = (int16_t *) buff;
+         _signed = true;
+         for (size_t i = 0; i < returnedElems; i++)
+         {
+             // TODO: Check this for correctness.
+             currentBuff[i] = isource[i] / 8;
+         }
+     }
+     else if (txFormat == FL2K_TX_FORMAT_INT8)
+     {
+         _signed = true;
+     }
+     else if (txFormat == FL2K_TX_FORMAT_UINT16)
+     {
+         int16_t *isource = (int16_t *) buff;
+         _signed = false;
+         for (size_t i = 0; i < returnedElems; i++)
+         {
+             // TODO: Check this for correctness.
+             currentBuff[i] = isource[i] / 8;
+         }
+     }
+     else if (txFormat == FL2K_TX_FORMAT_UINT8)
+     {
+         _signed = false;
+     }
+}
+
 int SoapyOsmoFL2K::writeStream(
         SoapySDR::Stream *stream,
         const void * const *buffs,
@@ -371,14 +421,11 @@ int SoapyOsmoFL2K::writeStream(
         bufferedElems = 0;
         this->releaseWriteBuffer(stream, _currentHandle, numElems, flags, timeNs);
     }
-
-    //this is the user's buffer for channel 0
-    const void *buff0 = buffs[0];
-
+    
     //are elements left in the buffer? if not, do a new write.
     if (bufferedElems == 0)
     {
-        int ret = this->acquireWriteBuffer(stream, _currentHandle, (void **)&_currentBuff, timeoutUs);
+        int ret = this->acquireWriteBuffer(stream, _currentHandle, (void **) _currentBuffs, timeoutUs);
         if (ret < 0) return ret;
         bufferedElems = ret;
     }
@@ -393,55 +440,19 @@ int SoapyOsmoFL2K::writeStream(
 
     size_t returnedElems = std::min(bufferedElems, numElems);
 
-
-    // Translate from signed float to unsigned uchar
-    if (txFormat == FL2K_TX_FORMAT_FLOAT32)
+    for (int i = 0; i < 3; i++)
     {
-        float *fsource = (float *) buff0;
-        _signed = true;
-        for (size_t i = 0; i < returnedElems; i++)
-        {
-            float scaled = fsource[i] * 128.0;
-            int8_t truncated = (int8_t) scaled;
-            _currentBuff[i] = truncated;
-            //_currentBuff[i] = (int8_t) (fsource[i] * 255.0);
-        }
+        this->writeStreamForChannel(buffs[i], _currentBuffs[i], returnedElems);
+        
+        //bump variables for next call into writeStream
+        _currentBuffs[i] += returnedElems*BYTES_PER_SAMPLE;
     }
-    else if (txFormat == FL2K_TX_FORMAT_INT16)
-    {
-        int16_t *isource = (int16_t *) buff0;
-        _signed = true;
-        for (size_t i = 0; i < returnedElems; i++)
-        {
-            // TODO: Check this for correctness.
-            _currentBuff[i] = isource[i] / 8;
-        }
-    }
-    else if (txFormat == FL2K_TX_FORMAT_INT8)
-    {
-        _signed = true;
-    }
-    else if (txFormat == FL2K_TX_FORMAT_UINT16)
-    {
-        int16_t *isource = (int16_t *) buff0;
-        _signed = false;
-        for (size_t i = 0; i < returnedElems; i++)
-        {
-            // TODO: Check this for correctness.
-            _currentBuff[i] = isource[i] / 8;
-        }
-    }
-    else if (txFormat == FL2K_TX_FORMAT_UINT8)
-    {
-        _signed = false;
-    }
-
+                      
     //bump variables for next call into writeStream
     bufferedElems -= returnedElems;
-    _currentBuff += returnedElems*BYTES_PER_SAMPLE;
     bufTicks += returnedElems; //for the next call to writeStream if there is a remainder
-
-    //return number of elements written to buff0
+                                    
+    //return number of elements written to buff
     if (bufferedElems != 0) flags |= SOAPY_SDR_MORE_FRAGMENTS;
     else this->releaseWriteBuffer(stream, _currentHandle, numElems, flags, timeNs);
     return returnedElems;
@@ -494,7 +505,9 @@ size_t SoapyOsmoFL2K::getNumDirectAccessBuffers(SoapySDR::Stream *stream)
 
 int SoapyOsmoFL2K::getDirectAccessBufferAddrs(SoapySDR::Stream *stream, const size_t handle, void **buffs)
 {
-    buffs[0] = (void *) _buffs[handle].data;
+    buffs[0] = (void *) _buffs[handle].red;
+    buffs[1] = (void *) _buffs[handle].green;
+    buffs[2] = (void *) _buffs[handle].blue;
     return 0;
 }
 
@@ -547,12 +560,13 @@ int SoapyOsmoFL2K::acquireWriteBuffer(
     bufTicks = _buffs[handle].tick;
     //timeNs = SoapySDR::ticksToTimeNs(_buffs[handle].tick, sampleRate);
     
-    // TODO: Why is the index hard-coded to 0?
-    buffs[0] = (void *)_buffs[handle].data;
+    buffs[0] = (void *)_buffs[handle].red;
+    buffs[1] = (void *)_buffs[handle].green;
+    buffs[2] = (void *)_buffs[handle].blue;
     //flags = SOAPY_SDR_HAS_TIME;
 
     // Return the number of elements available
-    return sizeof(_buffs[handle].data) / BYTES_PER_SAMPLE;
+    return sizeof(_buffs[handle].red) / BYTES_PER_SAMPLE;
 }
 
 

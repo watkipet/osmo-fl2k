@@ -53,18 +53,20 @@ static int TestTx(SoapySDR::Device *sdr, std::vector<std::string> &str_list)
     sdr->activateStream( tx_stream, 0, 0, 0);
     
     // 5. create a re-usable buffer for TX samples
-    float buff[102400];
+    float red_buff[102400];
+    float green_buff[102400];
+    float blue_buff[102400];
     
-    MakeCosineTable(buff, sizeof(buff) / sizeof(buff[0]));
+    MakeCosineTable(red_buff, sizeof(red_buff) / sizeof(red_buff[0]));
     
     // 6. Transmit some samples
     int ret;
     for( int i = 0; i < 200; ++i)
     {
-        void *buffs[] = {buff};
+        void *buffs[] = {red_buff, green_buff, blue_buff};
         int flags = 0;
         long long time_ns;
-        ret = sdr->writeStream( tx_stream, buffs, sizeof(buff) / sizeof(buff[0]), flags, time_ns, 1e6);
+        ret = sdr->writeStream( tx_stream, buffs, sizeof(red_buff) / sizeof(red_buff[0]), flags, time_ns, 1e6);
         
         printf("ret = ");
         if (ret < 0)
@@ -97,12 +99,6 @@ static void TestChannel(SoapySDR::Device *sdr, int channelNumber)
     std::vector< std::string > str_list;    //string list
     
     //    2.1 antennas
-    str_list = sdr->listAntennas( SOAPY_SDR_RX, channelNumber);
-    printf("Rx antennas: ");
-    for(int i = 0; i < str_list.size(); ++i)
-        printf("%s,", str_list[i].c_str());
-    printf("\n");
-    
     str_list = sdr->listAntennas( SOAPY_SDR_TX, channelNumber);
     printf("Tx antennas: ");
     for(int i = 0; i < str_list.size(); ++i)

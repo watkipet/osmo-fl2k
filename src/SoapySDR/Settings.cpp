@@ -109,9 +109,47 @@ SoapySDR::Kwargs SoapyOsmoFL2K::getHardwareInfo(void) const
 
 size_t SoapyOsmoFL2K::getNumChannels(const int dir) const
 {
-	// TODO: Should we change this to 3?
-    return (dir == SOAPY_SDR_TX) ? 1 : 0;
+    return (dir == SOAPY_SDR_TX) ? 3 : 0;
 }
+
+
+SoapySDR::Kwargs SoapyOsmoFL2K::getChannelInfo(const int direction, const size_t channel) const
+{
+    if (direction != SOAPY_SDR_TX)
+    {
+        throw std::runtime_error("getChannelInfo failed: Osmo-FL2K only supports TX");
+    }
+    
+    //key/value pairs for any useful information
+    //this also gets printed in --probe
+    SoapySDR::Kwargs args;
+    
+    std::string name;
+    switch (channel)
+    {
+        case 0: name = "red"; break;
+        case 1: name = "green"; break;
+        case 2: name = "blue"; break;
+        default:
+            throw std::runtime_error("getChannelInfo failed: channel must be less than 3.");
+    }
+
+    args["name"] = name;
+
+    return args;
+}
+
+bool SoapyOsmoFL2K::getFullDuplex(const int direction, const size_t channel) const
+{
+    if (direction != SOAPY_SDR_TX)
+    {
+        throw std::runtime_error("getFullDuplex failed: Osmo-FL2K only supports TX");
+    }
+    
+    // None of the channels are full-duplex--just TX.
+    return false;
+}
+
 
 /*******************************************************************
  * Antenna API
@@ -119,28 +157,58 @@ size_t SoapyOsmoFL2K::getNumChannels(const int dir) const
 
 std::vector<std::string> SoapyOsmoFL2K::listAntennas(const int direction, const size_t channel) const
 {
-	// TODO: Should we change this to 3?
-    std::vector<std::string> antennas;
-    if (direction == SOAPY_SDR_TX)
+    // TODO: Should we change this to 3?
+    if (direction != SOAPY_SDR_TX)
     {
-        antennas.push_back("TX");
+        throw std::runtime_error("listAntennas failed: Osmo-FL2K only supports TX");
     }
+    
+    std::vector<std::string> antennas;
+    switch (channel)
+    {
+        case 0: antennas.push_back("red"); break;
+        case 1: antennas.push_back("green"); break;
+        case 2: antennas.push_back("blue"); break;
+        default:
+            throw std::runtime_error("listAntennas failed: channel must be less than 3.");
+    }
+    
     return antennas;
 }
 
 void SoapyOsmoFL2K::setAntenna(const int direction, const size_t channel, const std::string &name)
 {
-	// TODO: Should we change this to 3?
     if (direction != SOAPY_SDR_TX)
     {
         throw std::runtime_error("setAntena failed: Osmo-FL2K only supports TX");
+    }
+    
+    bool valid = true;
+    switch (channel)
+    {
+        case 0: valid = (name == "red"); break;
+        case 1: valid = (name == "green"); break;
+        case 2: valid = (name == "blue"); break;
+        default:
+            throw std::runtime_error("setAntenna failed: channel must be less than 3.");
+    }
+    
+    if (!valid)
+    {
+        throw std::runtime_error("setAntenna failed: Osmo-FL2K does not support changing the antenna for a channel.");
     }
 }
 
 std::string SoapyOsmoFL2K::getAntenna(const int direction, const size_t channel) const
 {
-	// TODO: Should we change this to 3?
-    return "TX";
+	switch (channel)
+    {
+        case 0: return "red";
+        case 1: return "green";
+        case 2: return "blue";
+        default:
+            throw std::runtime_error("getAntenna failed: channel must be less than 3.");
+    }
 }
 
 /*******************************************************************

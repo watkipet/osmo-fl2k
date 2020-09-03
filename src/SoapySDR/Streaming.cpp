@@ -182,9 +182,20 @@ void SoapyOsmoFL2K::tx_callback(fl2k_data_info_t *data_info)
     // Give the driver the next filled buffer
     auto &buff = _buffs[_buf_tail];
     buff.tick = tick;
-    data_info->r_buf = (char *) buff.red;
-    data_info->g_buf = (char *) buff.green;
-    data_info->b_buf = (char *) buff.blue;
+    
+    // Process each enabled channel
+    for (const auto& channel: _channels)
+    {
+        void *ptr;
+        switch (channel)
+        {
+            case 0: data_info->r_buf = (char *) buff.red; break;
+            case 1: data_info->g_buf = (char *) buff.green; break;
+            case 2: data_info->b_buf = (char *) buff.blue; break;
+            default: break;
+        }
+    }
+
     data_info->sampletype_signed = _signed;
     
     // Advance the tail to point to the next buffer
@@ -218,10 +229,25 @@ SoapySDR::Stream *SoapyOsmoFL2K::setupStream(
     }
 
     //check the channel configuration
-    if (channels.size() > 1 or (channels.size() > 0 and channels.at(0) != 0))
+    if (channels.size() == 0)
     {
-        throw std::runtime_error("setupStream invalid channel selection");
+        // TODO: No channels could be a valid situation, right?
+        throw std::runtime_error("setupStream: no channels specified");
     }
+    
+    if (channels.size() > 3)
+    {
+        throw std::runtime_error("setupStream: too many (> 3) channels specified");
+    }
+    
+    for(const auto& channel: channels)
+    {
+        if (channel > 2)
+        {
+            throw std::runtime_error("setupStream: channel number too high (> 2)");
+        }
+    }
+    _channels = channels;
 
     //check the format
     _signed = false;
@@ -440,12 +466,13 @@ int SoapyOsmoFL2K::writeStream(
 
     size_t returnedElems = std::min(bufferedElems, numElems);
 
-    for (int i = 0; i < 3; i++)
+    // Process each enabled channel
+    for (const auto& channel: _channels)
     {
-        this->writeStreamForChannel(buffs[i], _currentBuffs[i], returnedElems);
+        this->writeStreamForChannel(buffs[channel], _currentBuffs[channel], returnedElems);
         
         //bump variables for next call into writeStream
-        _currentBuffs[i] += returnedElems*BYTES_PER_SAMPLE;
+        _currentBuffs[channel] += returnedElems*BYTES_PER_SAMPLE;
     }
                       
     //bump variables for next call into writeStream
@@ -505,6 +532,7 @@ size_t SoapyOsmoFL2K::getNumDirectAccessBuffers(SoapySDR::Stream *stream)
 
 int SoapyOsmoFL2K::getDirectAccessBufferAddrs(SoapySDR::Stream *stream, const size_t handle, void **buffs)
 {
+    // TODO: Is this effected by the enabled channels?
     buffs[0] = (void *) _buffs[handle].red;
     buffs[1] = (void *) _buffs[handle].green;
     buffs[2] = (void *) _buffs[handle].blue;
@@ -560,10 +588,19 @@ int SoapyOsmoFL2K::acquireWriteBuffer(
     bufTicks = _buffs[handle].tick;
     //timeNs = SoapySDR::ticksToTimeNs(_buffs[handle].tick, sampleRate);
     
-    buffs[0] = (void *)_buffs[handle].red;
-    buffs[1] = (void *)_buffs[handle].green;
-    buffs[2] = (void *)_buffs[handle].blue;
-    //flags = SOAPY_SDR_HAS_TIME;
+    // Process each enabled channel
+    for (const auto& channel: _channels)
+    {
+        void *ptr;
+        switch (channel)
+        {
+            case 0: ptr = (void *)_buffs[handle].red; break;
+            case 1: ptr = (void *)_buffs[handle].green; break;
+            case 2: ptr = (void *)_buffs[handle].blue; break;
+            default: break;
+        }
+        buffs[channel] = ptr;
+    }
 
     // Return the number of elements available
     return sizeof(_buffs[handle].red) / BYTES_PER_SAMPLE;

@@ -61,7 +61,7 @@ public:
     SoapySDR::ArgInfoList getStreamArgsInfo(const int direction, const size_t channel) const;
 
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels =
-            std::vector<size_t>(), const SoapySDR::Kwargs &args = SoapySDR::Kwargs());
+                                  std::vector<size_t> {0}, const SoapySDR::Kwargs &args = SoapySDR::Kwargs());
 
     void closeStream(SoapySDR::Stream *stream);
 
@@ -194,6 +194,9 @@ private:
     size_t bufferLength, asyncBuffs;
     std::atomic<long long> ticks;
     bool _signed;
+    std::vector<size_t> _channels;
+    
+    // Other
     std::chrono::system_clock::time_point start;
     
 public:
